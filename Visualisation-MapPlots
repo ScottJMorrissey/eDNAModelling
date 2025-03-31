@@ -1,0 +1,218 @@
+import numpy as np
+import pandas as pd
+import geopandas
+import os
+from datetime import datetime, timedelta
+from pyproj import Proj
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import cartopy.crs as ccrs
+import cmocean
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+import random
+
+# Ignore warnings
+import warnings
+warnings.filterwarnings('ignore')
+
+def decay(C0, k=0.179, k2=0.05, k3=0.007, t1=0, t2=28, t3=74):
+    Cn = C0  # Initial concentration at t0
+    Cnsaved = []
+    timesteps = np.arange(168)
+
+    for tn in timesteps:
+        if tn == t2:
+            C0 = Cn
+        if tn == t3:
+            C0 = Cn
+
+        if tn < t2:
+            Cn = C0 * np.exp(-k * tn)
+        elif t2 <= tn < t3:
+            Cn = C0 * np.exp(-k2 * tn)
+        else:
+            Cn = C0 * np.exp(-k3 * tn)
+
+        Cnsaved.append(Cn)
+
+    return Cnsaved, timesteps
+
+def actualdecay(Cnsaved, data, seednumber):
+    Cnsaved = np.array(Cnsaved)
+    ParticleDecay = Cnsaved[0:-1] - Cnsaved[1:]
+    ParticleDecay = np.round(ParticleDecay).astype(int)
+    
+    Populationlist = data.index.values.tolist()
+    Populationnp = data.index.values
+    
+    PopDict = {}
+    
+    for idx, DecayStep in enumerate(ParticleDecay):
+        random.seed(seednumber)  # Seed for reproducibility
+        ParticleDecaySelection = random.sample(Populationlist, DecayStep)  # Particles to decay
+        Popbool = np.where(~(pd.Index(pd.unique(ParticleDecaySelection)).get_indexer(Populationnp) >= 0))[0]
+        Populationlist = [Populationlist[i] for i in Popbool]
+        Populationnp = Populationnp[Popbool]
+        
+        LoopSave = {str(idx): Populationnp}
+        PopDict.update(LoopSave)
+
+    return PopDict
+
+def plot_decay_data(data, pop_dict_results, timesteps_to_plot, output_filename):
+    # Define the projection
+    proj = ccrs.PlateCarree(central_longitude=0)
+
+    # Define the figure and axis
+    fig, ax = plt.subplots(figsize=(16, 24), subplot_kw=dict(projection=proj))
+
+    # Remove figure title
+    fig.suptitle('')
+
+    # Colormap
+    cm = cmocean.cm.tools.lighten(cmocean.cm.speed, 0.7)
+
+    # Set axis properties
+    lat_min = -19.2
+    lat_max = -19.05
+    lon_min = 146.74
+    lon_max = 146.92
+
+    # Extent
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], ccrs.PlateCarree())
+
+    # Plot shapefile
+    shapefile = geopandas.read_file('/Users/scottmorrissey/Desktop/PhD/Modelling Materials/Mesh Generation/Slim/Shapefiles/MidCoast_and_Reefs.shp')
+    shapefile.plot(ax=ax, edgecolor="k", facecolor="none")
+
+    # Grid lines
+    gl = ax.gridlines(crs=proj, draw_labels=True, linewidth=0)  # Set linewidth to 0 to hide gridlines
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    gl.xlabel_style = {'size': 18}
+    gl.ylabel_style = {'size': 18}
+    gl.bottom_labels = False
+    gl.right_labels = False
+
+    # Disable drawing of the grid lines
+    gl.draw_labels = True
+    gl.draw_lines = False  # This will keep labels but remove gridlines
+
+    # Plot data points for the specific timesteps
+    for release_number, stgrid_data in pop_dict_results.items():
+        if release_number in timesteps_to_plot:  # Ensure the release number is in timesteps_to_plot
+            timestep_to_plot = timesteps_to_plot[release_number]
+            
+            for stgrid_value, pop_dict in stgrid_data.items():
+                subset_data = data[(data['ReleaseNumber'] == release_number) & (data['StGrid'] == stgrid_value)]
+                
+                # Ensure the combination exists in colors dictionary
+                if stgrid_value in stgrid_colors:
+                    color = stgrid_colors[stgrid_value]
+                else:
+                    continue  # Skip plotting if the combination is not found
+                
+                if str(timestep_to_plot) in pop_dict:
+                    ax.plot(subset_data['Long'][pop_dict[str(timestep_to_plot)]], 
+                            subset_data['Lat'][pop_dict[str(timestep_to_plot)]], 
+                            ls='', marker='.', c=mcolors.to_rgba(color, alpha=1), label=f'Release {release_number}, StGrid {stgrid_value}')
+
+    # Add legend
+    #handles, labels = ax.get_legend_handles_labels()
+    #unique_labels = dict(zip(labels, handles))
+    #ax.legend(unique_labels.values(), unique_labels.keys(), loc='upper right')
+
+    # Save and show the plot
+    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
+    plt.close(fig)
+
+# Define the input directory and output directory
+pathin = '/Volumes/Adventures/MultiRelease/26122017/'  # Replace with your actual input directory
+pathout = '/Users/scottmorrissey/Desktop/Multi-Release Analysis/Plots/26122017/Island/'  # Replace with your actual output directory
+
+# Define the color mapping based on StGrid values
+stgrid_colors = {
+    3326: '#008000',  # Green
+    3327: '#0000FF',  # Blue
+    3328: '#FF0000'   # Red
+}
+
+# Define a function to calculate the correct timestep from the file name
+def calculate_timesteps(filename):
+    start_time = datetime.strptime("2017-12-26_005700", "%Y-%m-%d_%H%M%S")
+    file_time = datetime.strptime(filename[:-4], "%Y-%m-%d_%H%M%S")
+    elapsed_hours = int((file_time - start_time).total_seconds() // 3600)
+    releases = {release_number: elapsed_hours + 1 - (release_number - 1) * 10 for release_number in range(1, (elapsed_hours // 10) + 2)}
+    return releases
+
+# Get all files in the input directory
+files = sorted([os.path.join(pathin, f) for f in os.listdir(pathin) if f.endswith('.txt')])
+
+# Create an empty dictionary to store the decay timesteps library
+decay_timesteps_library = {}
+
+# Process each file
+for file in files:
+    # Get the decay timesteps for the current file
+    filename = os.path.basename(file)
+    timesteps_to_plot = calculate_timesteps(filename)
+    decay_timesteps_library[filename] = timesteps_to_plot
+
+    print(f"Processing file: {filename}")
+    print(f"Timesteps to plot: {timesteps_to_plot}")
+
+    # Load the data
+    data = pd.read_csv(file)
+    
+    # Convert UTM to latitude and longitude
+    easting = data['EdSetX']
+    northing = data['EdSetY']
+    utm_proj = Proj(proj='utm', zone=55, south=True, ellps='WGS84')  # Ensure UTM projection is defined here
+    longitude, latitude = utm_proj(easting.values, northing.values, inverse=True)
+    data['Lat'] = latitude
+    data['Long'] = longitude
+    
+    # Process each release
+    release_numbers = data['ReleaseNumber'].unique()
+    decay_results = {}
+
+    for release_number in release_numbers:
+        release_data = data[data['ReleaseNumber'] == release_number]
+        
+        stgrid_counts = release_data['StGrid'].value_counts()
+        stgrid_values = release_data['StGrid'].unique()
+        
+        decay_results[release_number] = {}
+        
+        for stgrid_value in stgrid_values:
+            subset_data = release_data[release_data['StGrid'] == stgrid_value]
+            initial_concentration = subset_data.shape[0]
+            decay_result, timesteps = decay(C0 = initial_concentration)
+            decay_results[release_number][stgrid_value] = decay_result
+
+    print(f"Decay results for file {filename} calculated.")
+
+    # Store decay results
+    pop_dict_results = {}
+
+    for release_number, stgrid_data in decay_results.items():
+        pop_dict_results[release_number] = {}
+        
+        for stgrid_value, decay_result in stgrid_data.items():
+            subset_data = data[(data['ReleaseNumber'] == release_number) & (data['StGrid'] == stgrid_value)]
+            pop_dict = actualdecay(decay_result, subset_data, seednumber=1)
+            pop_dict_results[release_number][stgrid_value] = pop_dict
+
+    print(f"Population dictionary for file {filename} created.")
+
+    # Generate the output filename
+    output_filename = os.path.join(pathout, filename.replace('.txt', '_decay.png'))
+    
+    # Plot the data
+    plot_decay_data(data, pop_dict_results, timesteps_to_plot, output_filename)
+
+    print(f"Decay plot for file {filename} saved to {output_filename}.")
+
+# Print the decay timesteps library
+print("Decay timesteps library:")
+print(decay_timesteps_library)
