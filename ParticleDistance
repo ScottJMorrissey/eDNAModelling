@@ -1,0 +1,96 @@
+import numpy as np
+import pandas as pd
+import geopandas
+import os
+import random
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from pyproj import Proj
+import cmocean
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# Function to calculate particle decay
+def decay(C0, k=0.179, k2=0.05, k3=0.007, t1=0, t2=28, t3=74):
+    Cnm1 = C0
+    Cnsaved = []
+    timesteps = np.arange(168)
+    for tn in timesteps:  
+        if tn == t2: 
+            C0 = Cn
+        if tn == t3:
+            C0 = Cn
+        if tn < t2: 
+            Cn = C0 * np.exp(-k * tn)
+        elif t2 <= tn < t3:
+            Cn = C0 * np.exp(-k2 * tn)
+        elif tn >= t3:
+            Cn = C0 * np.exp(-k3 * tn)
+        Cnsaved.append(Cn)
+    return Cnsaved, timesteps
+
+# Function to simulate actual particle decay
+def actualdecay(Cnsaved, data, seednumber):
+    Cnsaved = np.array(Cnsaved)
+    ParticleDecay = np.round(Cnsaved[:-1] - Cnsaved[1:]).astype(int)
+    Populationlist = data.index.values.tolist()
+    Populationnp = data.index.values
+    PopDict = {}
+    for idx, DecayStep in enumerate(ParticleDecay):
+        random.seed(seednumber)
+        ParticleDecaySelection = random.sample(Populationlist, DecayStep)
+        ParticleDecaySelection = pd.Index(pd.unique(ParticleDecaySelection))
+        Popbool = np.where(~(ParticleDecaySelection.get_indexer(Populationnp) >= 0))[0]
+        Populationlist = [Populationlist[i] for i in Popbool]
+        Populationnp = Populationnp[Popbool]
+        LoopSave = {str(idx): Populationnp}
+        PopDict.update(LoopSave)
+    return PopDict
+
+# Function to calculate distances and save them
+def calculate_distances(data, testDict, output_dir, file_prefix, ts):
+    distances = {}
+    ts_str = str(ts)
+    if ts_str in testDict:
+        a = (data['EdSetX'][testDict[ts_str]] - data['StSetX'][testDict[ts_str]])**2
+        b = (data['EdSetY'][testDict[ts_str]] - data['StSetY'][testDict[ts_str]])**2
+        distances[ts_str] = (a + b)**0.5
+        distances[ts_str].to_csv(f"{output_dir}/{file_prefix}_Time-{ts_str}.csv", header=False)
+    return distances
+
+# Main processing function
+def process_files(input_dir, output_dir, shapefile_path, seed_numbers):
+    files = sorted([f for f in os.listdir(input_dir) if f.endswith('.txt')])
+    for seed_number in seed_numbers:
+        for ts, file in enumerate(files):
+            print(f"File: {file}  -->  ts: {ts}")
+            data = pd.read_csv(os.path.join(input_dir, file)) 
+            utm_zone = 55
+            southern_hemisphere = True
+            utm_proj = Proj(proj='utm', zone=utm_zone, south=southern_hemisphere, ellps='WGS84')
+            longitude, latitude = utm_proj(data['EdSetX'], data['EdSetY'], inverse=True)
+            data['Lat'] = latitude
+            data['Long'] = longitude
+
+            StGridvalue = data.StGrid.unique()
+            Cn1, _ = decay(C0=data[data.StGrid == StGridvalue[0]].shape[0])
+            Cn2, _ = decay(C0=data[data.StGrid == StGridvalue[1]].shape[0])
+            Cn3, _ = decay(C0=data[data.StGrid == StGridvalue[2]].shape[0])
+
+            testDict1 = actualdecay(Cn1, data[data.StGrid == StGridvalue[0]], seednumber=seed_number)
+            testDict2 = actualdecay(Cn2, data[data.StGrid == StGridvalue[1]], seednumber=seed_number)
+            testDict3 = actualdecay(Cn3, data[data.StGrid == StGridvalue[2]], seednumber=seed_number)
+
+            distances1 = calculate_distances(data, testDict1, output_dir, f"{file[:-4]}_3326_Rep{seed_number}", ts)
+            distances2 = calculate_distances(data, testDict2, output_dir, f"{file[:-4]}_3327_Rep{seed_number}", ts)
+            distances3 = calculate_distances(data, testDict3, output_dir, f"{file[:-4]}_3328_Rep{seed_number}", ts)
+
+# Parameters
+input_dir = '/Volumes/Hydros and Particle Runs/Particle Runs/28062018/'
+output_dir = '/Volumes/Hydros and Particle Runs/Distances/28062018'
+shapefile_path = '/Users/scottmorrissey/Desktop/PhD/Modelling Materials/Mesh Generation/Slim/Shapefiles/MidCoast_and_Reefs.shp'
+seed_numbers = [1, 2, 3, 4, 5]
+
+# Run the process
+process_files(input_dir, output_dir, shapefile_path, seed_numbers)
