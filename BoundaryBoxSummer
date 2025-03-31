@@ -1,0 +1,156 @@
+import os
+import numpy as np
+import pandas as pd
+import random
+from pyproj import Proj
+from scipy import stats
+from datetime import datetime, timedelta
+
+# Define the boundary box correctly as (min_lon, min_lat, max_lon, max_lat)
+boundary_box = (146.8327, -19.1191, 146.867, -19.10174)
+
+# Define the decay function
+def decay(C0, k=0.179, k2=0.05, k3=0.007, t1=0, t2=28, t3=74):
+    Cn = C0  # Initial concentration at t0
+    Cnsaved = []
+    timesteps = np.arange(168)  # Total timesteps (7 days * 24 hours = 168 hours)
+
+    for tn in timesteps:
+        if tn == t2:
+            C0 = Cn
+        if tn == t3:
+            C0 = Cn
+
+        if tn < t2:
+            Cn = C0 * np.exp(-k * tn)
+        elif t2 <= tn < t3:
+            Cn = C0 * np.exp(-k2 * tn)
+        else:
+            Cn = C0 * np.exp(-k3 * tn)
+
+        Cnsaved.append(Cn)
+    
+    return Cnsaved, timesteps
+
+# Function to calculate correct decay timestep for each release
+def calculate_decay_timestep(file_time, release_time):
+    elapsed_hours = int((file_time - release_time).total_seconds() // 3600)
+    return max(elapsed_hours, 0)  # Ensure decay timestep is non-negative
+
+# Define debugging output directory
+debug_output_path = '/home/jc298812/SLIM/MultiReleaseData/DebugOutput'
+os.makedirs(debug_output_path, exist_ok=True)
+
+# Apply decay function to a dataset and calculate relative abundance
+def actualdecay(Cnsaved, data, decay_timestep, boundary_box, initial_particles, seednumber=1, timestep=0):
+    random.seed(seednumber)
+    Cnsaved = np.array(Cnsaved)
+    
+    Populationlist = data.index.values.tolist()
+    
+    if decay_timestep < len(Cnsaved):
+        Cn = Cnsaved[decay_timestep]
+    else:
+        Cn = 0
+
+    remaining_particles = int(Cn)
+    if remaining_particles >= len(Populationlist):
+        remaining_particles = len(Populationlist)
+    
+    remaining_particles_selection = random.sample(Populationlist, remaining_particles)
+    remaining_population = data.loc[remaining_particles_selection, ['Lat', 'Long']]
+    
+    # Debugging: Check dataset before filtering
+    debug_info = {
+        'Boundary Box': [boundary_box],
+        'Lat Min': [remaining_population['Lat'].min()],
+        'Lat Max': [remaining_population['Lat'].max()],
+        'Long Min': [remaining_population['Long'].min()],
+        'Long Max': [remaining_population['Long'].max()],
+        'Particles Count': [len(remaining_population)]
+    }
+    debug_df = pd.DataFrame(debug_info)
+    debug_df.to_csv(os.path.join(debug_output_path, f'debug_timestep_{timestep}.csv'), index=False)
+    
+    # Extract boundary box values correctly
+    min_lon, min_lat, max_lon, max_lat = boundary_box
+    
+    # Count particles inside the boundary box
+    inside_box = remaining_population[
+        remaining_population['Long'].between(min_lon, max_lon) &
+        remaining_population['Lat'].between(min_lat, max_lat)
+    ]
+    inside_box_count = len(inside_box)
+    outside_box_count = remaining_particles - inside_box_count
+    
+    relative_abundance_inside = inside_box_count / initial_particles if initial_particles > 0 else 0
+    relative_abundance_outside = outside_box_count / initial_particles if initial_particles > 0 else 0
+    
+    return remaining_particles, inside_box_count, outside_box_count, relative_abundance_inside, relative_abundance_outside
+
+# Define input path
+pathin = '/home/jc298812/SLIM/MultiReleaseData/24012018/'
+output_path = '/home/jc298812/SLIM/MultiReleaseData/RelativeAbundance/24012018/'
+os.makedirs(output_path, exist_ok=True)
+
+files = sorted([f for f in os.listdir(pathin) if f.endswith('.txt')], key=lambda f: datetime.strptime(f[:-4], "%Y-%m-%d_%H%M%S"))
+
+# Set up UTM projection
+utm_zone = 55
+utm_proj = Proj(proj='utm', zone=utm_zone, south=True, ellps='WGS84')
+
+# Track release start times
+time_of_releases = {}
+
+# Process each file
+for ts, filename in enumerate(files):
+    print(f"Processing timestep {ts} with file {filename}.")
+    file_time = datetime.strptime(filename[:-4], "%Y-%m-%d_%H%M%S")
+    
+    data = pd.read_csv(os.path.join(pathin, filename))
+    
+    # Convert UTM to lat/lon
+    data['Long'], data['Lat'] = utm_proj(data['EdSetX'].values, data['EdSetY'].values, inverse=True)
+    
+    # Process multiple releases
+    releases = data['ReleaseNumber'].unique()
+    timestep_results = []
+    for release in releases:
+        if release not in time_of_releases:
+            time_of_releases[release] = file_time  # Store the first appearance of each release
+        
+        release_time = time_of_releases[release]
+        decay_timestep = calculate_decay_timestep(file_time, release_time)
+        
+        print(f"Processing Release {release} at timestep {ts}, decay timestep {decay_timestep}.")
+        data_release = data[data['ReleaseNumber'] == release]
+        
+        # Separate by StGrid
+        grids = {grid: data_release[data_release['StGrid'] == grid] for grid in [3326, 3327, 3328]}
+        
+        # Compute decay for each StGrid
+        decay_data = {grid: decay(C0=grids[grid].shape[0]) for grid in grids}
+        
+        # Process replicates
+        for seednumber in range(1, 6):
+            for grid in grids:
+                initial_particles = grids[grid].shape[0]
+                remaining_particles, inside_count, outside_count, rel_abundance_inside, rel_abundance_outside = actualdecay(
+                    decay_data[grid][0], grids[grid], decay_timestep, boundary_box, initial_particles, seednumber, timestep=ts)
+                
+                timestep_results.append({
+                    'Timestep': ts,
+                    'ReleaseNumber': release,
+                    'StGrid': grid,
+                    'Remaining_Particles': remaining_particles,
+                    'Particles_Inside_Boundary': inside_count,
+                    'Particles_Outside_Boundary': outside_count,
+                    'Relative_Abundance_Inside': rel_abundance_inside,
+                    'Relative_Abundance_Outside': rel_abundance_outside
+                })
+    
+    # Save timestep results to CSV
+    timestep_df = pd.DataFrame(timestep_results)
+    output_filename = os.path.join(output_path, f'timestep_{ts}_relative_abundance.csv')
+    timestep_df.to_csv(output_filename, index=False)
+    print(f"Timestep {ts} relative abundance saved to: {output_filename}")
