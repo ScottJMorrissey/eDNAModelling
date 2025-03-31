@@ -1,0 +1,140 @@
+import os
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import cartopy.crs as ccrs
+import geopandas as gpd
+from matplotlib.colors import LinearSegmentedColormap
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+
+# Load particle positions from JSON
+def load_particle_positions(input_filename):
+    with open(input_filename, 'r') as f:
+        accumulated_positions = json.load(f)
+    return accumulated_positions
+
+# Plot relative concentration surface with logarithmic normalization and custom quick-transition colormap
+def plot_relative_concentration_log_norm_with_custom_cmap(average_hist, xedges, yedges, output_filename, threshold=0.0765, midpoint_particle_count=22.5):
+    print("Starting to plot relative concentration surface with log normalization and custom quick-transition colormap.")
+    
+    # Define the projection
+    proj = ccrs.PlateCarree(central_longitude=0)
+
+    # Define the figure and axis
+    fig, ax = plt.subplots(figsize=(16, 24), subplot_kw=dict(projection=proj))
+
+    # Set axis properties
+    lat_min = -19.12
+    lat_max = -19.08
+    lon_min = 146.815
+    lon_max = 146.89
+
+    # Extent
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], ccrs.PlateCarree())
+
+    # Plot shapefile for geographic context
+    shapefile_path = '/home/jc298812/SLIM/Mesh/Shapefiles/MidCoast_and_Reefs.shp'
+    if os.path.exists(shapefile_path):
+        shapefile = gpd.read_file(shapefile_path)
+        shapefile.plot(ax=ax, edgecolor="k", facecolor="none")
+    else:
+        print(f"Shapefile not found: {shapefile_path}")
+
+    # Grid lines
+    gl = ax.gridlines(crs=proj, draw_labels=True, linewidth=0)  # Set linewidth to 0 to hide gridlines
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    gl.xlabel_style = {'size': 18}
+    gl.ylabel_style = {'size': 18}
+    gl.bottom_labels = False
+    gl.right_labels = False
+
+    # Disable drawing of the grid lines
+    gl.draw_labels = True
+
+    print("Creating 2D histogram of particle positions.")
+    
+    # Apply logarithmic normalization
+    hist_log = np.log1p(average_hist)  # log1p is log(1 + x) to avoid log(0) issues
+
+    # Normalize the histogram to get relative concentrations after log transformation
+    hist_norm = hist_log / np.max(hist_log)
+
+    # Calculate the raw particle count corresponding to the threshold
+    raw_particle_count_at_threshold = np.expm1(threshold * np.max(hist_log))
+    print(f"The raw particle count corresponding to the 0.001 threshold is approximately: {raw_particle_count_at_threshold}")
+
+    # Apply threshold: set values below the threshold to NaN
+    hist_norm[hist_norm < threshold] = np.nan
+
+    # Convert the raw midpoint_particle_count into log-normalized space
+    midpoint_log = np.log1p(midpoint_particle_count) / np.max(hist_log)
+
+    # Create a colormap with a quick transition at the log-normalized midpoint
+    cmap = LinearSegmentedColormap.from_list('custom_cmap', [
+        (0, 'blue'),                      # Cold color (blue) for low concentrations
+        (midpoint_log * 0.5, 'blue'),    # Blue up to just below the midpoint
+        (midpoint_log, 'yellow'),         # Sharp transition to yellow at the midpoint
+        (midpoint_log * 2, 'red'),     # Sharp transition to red just above the midpoint
+        (1, 'darkred')                    # Warm color (red) for high concentrations
+    ])
+
+    # Plot the relative concentration surface with log normalization
+    pcm = ax.pcolormesh(xedges, yedges, hist_norm.T, cmap=cmap, norm=mcolors.Normalize(vmin=threshold, vmax=1), alpha=0.8)
+
+    # Add color bar
+    cbar = plt.colorbar(pcm, ax=ax, orientation='vertical', pad=0.01)
+    cbar.set_label('Relative Particle Concentration (Log-Normalized)', fontsize=18)
+
+    # Save and show the plot
+    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
+    plt.close(fig)
+
+    print(f"Relative concentration plot (log-normalized) saved to {output_filename}.")
+
+# Define the base directory and output filename
+base_output_path = '/home/jc298812/SLIM/MultiReleaseData/SummerReps/29122016/'
+replicates = ['Rep1', 'Rep2', 'Rep3', 'Rep4', 'Rep5']
+locations = ['3326', '3327', '3328']
+output_filename = '/home/jc298812/SLIM/MultiReleaseData/29122016_combined_avg.png'  # Replace with your actual output directory and filename
+
+# Create a variable to accumulate histograms
+sum_hist = None
+xedges = None
+yedges = None
+
+# Loop through each replicate and location directory to accumulate histograms
+print("Starting to load intermediate files in batches for all replicates and locations.")
+for replicate in replicates:
+    for location in locations:
+        intermediate_output_path = os.path.join(base_output_path, replicate, location)
+        latitudes = []
+        longitudes = []
+        for i, intermediate_file in enumerate(sorted(os.listdir(intermediate_output_path))):
+            if intermediate_file.endswith('.json') and i % 1 == 0:
+                print(f"Loading intermediate file: {intermediate_file} from {replicate} - {location}")
+                intermediate_positions = load_particle_positions(os.path.join(intermediate_output_path, intermediate_file))
+                for positions in intermediate_positions:
+                    if isinstance(positions, dict) and 'Lat' in positions and 'Long' in positions:
+                        latitudes.append(positions['Lat'])
+                        longitudes.append(positions['Long'])
+                    else:
+                        print(f"Unexpected data format: {positions}")
+
+        # Create a 2D histogram of particle positions for the current replicate and location
+        hist, xedges, yedges = np.histogram2d(longitudes, latitudes, bins=[7892, 4428], range=[[146.815, 146.89], [-19.12, -19.08]])
+
+        # Accumulate histograms (sum them up)
+        if sum_hist is None:
+            sum_hist = hist
+        else:
+            sum_hist += hist
+
+# Calculate the average histogram by dividing by the number of replicates
+average_hist = sum_hist / len(replicates)
+
+# Plot the combined relative concentration surface with log normalization
+plot_relative_concentration_log_norm_with_custom_cmap(average_hist, xedges, yedges, output_filename, threshold=0.0765, midpoint_particle_count=22.5)
+
+print("Finished processing all replicates and locations.")
