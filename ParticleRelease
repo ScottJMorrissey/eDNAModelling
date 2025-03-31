@@ -1,0 +1,123 @@
+import slimParticle
+import slimPre
+#import slimPost
+#import slim
+
+import numpy as np
+import datetime
+import pyproj
+import os
+import pandas as pd
+
+############# set up parameters/coefficent values ###################
+###Tracker
+trk_time = 180      # Time step between each iteration of the particle tracker
+
+conc_p = 100000     # The concentration of particles to be seeded from each location per m3  
+
+hydro_time = 1800    # Time step between each iteration of the hydrodynamic model
+
+row_n = 0  # Row number corresponding to dates to release particles
+
+# Proportion of depth-averaged current to apply at dispersal
+btm = 1
+
+#################### paths ####################
+RunDates = '2016-01_2018-12'
+pathin = '/home/jc298812/SLIM/'
+hydroPath = '/scratch/jc298812/' +'Oct17Jan18abinreal'
+
+data_dir_base = pathin +'Pre-Processing/Partition/' +RunDates +'_' +'data_%s/' % slimPre.partition_nb()
+data_dir = data_dir_base+ '%s/' % slimPre.partition_id()
+
+mesh_projection = "+proj=utm +zone=55 +south +ellps=WGS84"
+bathPath = data_dir_base+"bathymetry_smooth/bathymetry_smooth.idx"
+bathPath_re = data_dir_base+"bathymetry_smooth/bathymetry_smooth_COMP_0.msh"
+
+DatesFi = pathin +'Chironex_eDNA_postpro/Dates.csv'
+SeedLocFi = pathin +'Chironex_eDNA_postpro/NodeElements.csv'
+pathout = '/scratch/jc298812/post-pro-test/'
+os.makedirs(pathout, exist_ok=True) 
+
+################### unpack input #################
+Dates = np.loadtxt(DatesFi, delimiter = ",", skiprows = 1, dtype = str)
+
+#################### functions ######################
+def StLnDst(EdX, EdY, StX, StY):
+    return np.sqrt((EdX - StX)**2 + (EdY - StY)**2)
+
+def PolyArea(x,y):
+    return 0.5 * np.abs(np.dot(x,np.roll(y,1))-np.dot(y,np.roll(x,1)))
+
+###################### Physical data ###############################
+mesh =  slimPre.Mesh(data_dir+"mesh.msh", mesh_projection)
+slimPre.create_okubo_map(mesh, pathout +'okubo_map', 2e-4)
+bathf = (bathPath,'bathymetry')
+hydro = slimParticle.HydroReader(mesh, hydroPath, bathf, Dates[row_n,2], hydro_time)
+loader_kappa = slimParticle.PreLoader(mesh, [pathout +'okubo_map.msh'], compute_gradient=True)
+
+#################### Seeding ###################
+tracker = slimParticle.Tracker(mesh,["origin", "sse"])
+SInp = np.loadtxt(SeedLocFi, delimiter = ",", skiprows = 1)
+pos = SInp[:,1:]
+tags = np.array([ SInp[:,0], SInp[:,0] ]).T
+
+TagDict = {tags[dc,0]: (pos[dc,0], pos[dc,1]) for dc in range(tags.shape[0])}
+
+TriArea = np.ones(tags.shape[0])
+get_depth = pd.read_csv(bathPath_re, header=None, skiprows=26, skipfooter=1, delimiter=' ', engine='python')
+get_depth.columns = ["Fidp1", "nnodes", "dp_1", "NA_1", "dp_2", "NA_2", "dp_3", "NA_3"]
+
+TriDepth = [np.mean([get_depth.dp_1[int(tags[tg,0])], get_depth.dp_2[int(tags[tg,0])], get_depth.dp_3[int(tags[tg,0])]]) for tg in range(tags.shape[0])]
+TriVol = np.array(TriArea) * np.array(TriDepth)
+conc_p = np.full(TriVol.shape, conc_p)
+num_p = (conc_p * TriVol).astype(int)
+
+##################### Dipersal #############################
+rk = slimParticle.ERK44(Dates[row_n ,0], Dates[row_n ,1], trk_time)
+t0 = rk.time
+last_release_time = t0
+
+release_id = 0  # Initialize release identifier
+
+# Initial particle release at the start of the simulation
+added = tracker.add_particles(pos, tags, num_p, True)
+
+while not rk.end:
+    tn = (rk.time - t0) / (24 * 60 * 60)  # Time in days at step n
+    time_str = slimParticle.format_time(rk.time)
+    
+    if rk.time - last_release_time >= 10 * 3600:  # Check if 10 hours have passed
+        added = tracker.add_particles(pos, tags, num_p, True)  # Add particles
+        last_release_time = rk.time  # Update the last release time
+        release_id += 1  # Increment the release identifier
+
+    for irk in range(rk.nsub):
+        hydro.load(tracker, rk.time)
+        uv = hydro.uv * btm
+        dx = uv * rk.dt
+        rk.sub_time_step(tracker, dx)
+        
+    hydro.load(tracker, rk.time)
+    kappa = loader_kappa.load(tracker, rk.time)
+    diffu = hydro.diffusivity(kappa, rk.dt)
+    rk.end_time_step(tracker, diffu)
+    
+    if abs(rk.time % 3600) < 1:
+        print(time_str)
+        setTagsIx = tracker.data[:,1:]
+        StSetX, StSetY = np.zeros(setTagsIx.shape[0]), np.zeros(setTagsIx.shape[0])
+        for sp in range(setTagsIx.shape[0]):
+            StSetX[sp], StSetY[sp] = TagDict[int(setTagsIx[sp])][0], TagDict[int(setTagsIx[sp])][1]
+        EdSetX, EdSetY = tracker.position[:,0], tracker.position[:,1]
+        SetLine = StLnDst(EdSetX, EdSetY, StSetX, StSetY)
+        time_str_array = np.resize(np.array([time_str]), EdSetX.shape) 
+        release_id_array = np.full(EdSetX.shape, release_id)  # Create an array for release_id
+        SetSave = np.stack((StSetX, StSetY, EdSetX, EdSetY, SetLine, setTagsIx[:,0], tracker.element_ids, time_str_array, release_id_array), axis=1)
+        SetSave = pd.DataFrame(data=SetSave, columns=['StSetX', 'StSetY', 'EdSetX', 'EdSetY', 'SLD', 'StGrid', 'EdGrid', 'time', 'release_id'])
+        log_name = pathout + '/' + time_str.replace(" ", "_") + '.txt'
+        SetSave.to_csv(log_name, index=False)
+
+        # Uncomment the following lines to remove particles lost from the open boundary
+        # on_boundary = tracker.is_on_open_boundary()
+        # tracker.remove_particles(on_boundary)
