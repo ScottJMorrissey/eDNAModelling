@@ -1,4 +1,4 @@
-#The code contained within this github is used to undertake particle releases emulating eDNA.
+#The code contained within this github is used to undertake particle releases emulating eDNA and to process associated data.
 
 #ParticleRelease - this is the code for releasing particles from set locations with the hydrodynamic model.
 #Visualisation-MapPlots - this is the code for visualising released particles on maps.
@@ -7,3 +7,5 @@
 #Log-normalised Relative eDNA particle concentration map plots - this is the code for determining the detectability of eDNA from release locations.
 
 #The code needed to create the hydrodynamic model for this can be found within the SLIM gitub (https://git.immc.ucl.ac.be/slim/slim/-/wikis/home)
+
+#For permission to use this code - please contact Scott Morrissey (scott.morrissey@my.jcu.edu.au)
