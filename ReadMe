@@ -1,10 +1,13 @@
-#The code contained within this github is used to undertake particle releases emulating eDNA and to process associated data.
+#The code, data, and animations contained within this github is used to undertake particle releases emulating eDNA and to process associated data.
 
 #ParticleRelease - this is the code for releasing particles from set locations with the hydrodynamic model.
 #Visualisation-MapPlots - this is the code for visualising released particles on maps.
 #ParticleDistance - this is the code for determining the distances at which particles travelled from the initial release point for each timestep.
 #BoundaryBoxSummer/Winter - this is the code for determining the relative abudance of particles within a defined area.
 #Log-normalised Relative eDNA particle concentration map plots - this is the code for determining the detectability of eDNA from release locations.
+#Animation S4.1-S4.12 - these are animations of particles releases for all Scenarios.
+#ScenarioA-H_relative_abundance_inside/outsideHSB - these are data associated with the relative abundance of particles within and outside of Horseshoe Bay. 
+#Summer/Winter-ParticleDistance - these are data associated with particle distance travelled from source locations. 
 
 #The code needed to create the hydrodynamic model for this can be found within the SLIM gitub (https://git.immc.ucl.ac.be/slim/slim/-/wikis/home)
 
